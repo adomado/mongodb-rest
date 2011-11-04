@@ -1,6 +1,6 @@
 var mongo = require("mongodb");
-var ObjectID = require("mongodb/external-libs/bson").ObjectID;
-var dereference = require("./helpers/dereference");
+//var ObjectID = require("mongodb/external-libs/bson").ObjectID;
+var dereferenceFunc = require("./helpers/dereference");
 var dbconnection = require("./helpers/dbconnection");
 var jsonUtils = require("./helpers/jsonUtils");
 var sys = require("sys");
@@ -12,61 +12,79 @@ var sys = require("sys");
     next = function(err, docs || doc, hitsCount)
 */
 module.exports = function(target, spec, options, next) {
-    // get custom options values and delete them, leaving options lean for mongodb
-    var countQueryHits = options.countQueryHits;
-    delete options.countQueryHits;
+  // get custom options values and delete them, leaving options lean for mongodb
+  var countQueryHits = options.countQueryHits;
+  delete options.countQueryHits;
 
-    var dereference = options.dereference;
-    delete options.dereference;
+  var dereference = options.dereference;
+  delete options.dereference;
 
-    // deep decode spec
-	jsonUtils.deepDecode(spec);
+  // deep decode spec
+  jsonUtils.deepDecode(spec);
 
-	// Providing an id overwrites giving a query in the URL
-	if (spec._id) {
-		if(/^[0-9a-fA-F]{24}$/.test(spec._id))
-			spec._id = new ObjectID(spec._id);
-		else
-			spec._id = spec._id;
-	}
+  dbconnection.open(target.db, target.connection, function(err,db) {
+    if(err) { next(err); return; }
+    // open collection
+    db.collection(target.collection, function(err, collection) {
 
-	dbconnection.open(target.db, target.connection, function(err,db) {
-		db.collection(target.collection, function(err, collection) {
+      if(spec._id) { // dereference is currently supported only for single object
+    
+        // if there is requested object by ID -> query only One document
+        collection.findOne(spec, options, function(err, doc){
 
-			if(spec._id) { // dereference is currently supported only for single object
-    		
-				// if there is requested object by ID -> query only One document
-				collection.findOne(spec, options, function(err, doc){
-					if(doc == null)
-						err = new Error("not found");
+          if(dereference == true && doc != null) {
+            dereferenceFunc(db, doc, function(err) {
+              next(err, doc);
+            });
+          } else
+            next(err, doc);
 
-					if(dereference == true) {
-						dereference(db, doc, function(err) {
-							next(err, doc);
-						});
-					} else
-						next(err, doc);
-	              
-					db.close();
-				});
-			} else {
-
-				// otherwise find all matching given query but without dereference support, 
-                // however has countQueryHits instead
-				collection.find(spec, options, function(err, cursor) {
-					cursor.toArray(function(err, docs){
-						
-						if(countQueryHits) {
-							collection.count(spec, function(err, allCount) {
-								next(err, docs, allCount);
-							});
-						} else
-							next(err, docs);
-		            
-						db.close();
-					});
-				});
-			}
-		});
-	});
+          //db.close();
+        });
+      }
+      else
+      {
+        if (options.distinct)
+        {
+          var key = options.distinct;
+          delete options.distinct;
+          collection.distinct(key, spec, function(err, docs)
+          {
+            if(countQueryHits)
+            {
+              next(err, docs, docs.length);
+            }
+            else
+            {
+              next(err, docs);
+            }
+            //db.close();
+          });
+        }
+        else
+        {
+          // otherwise find all matching given query but without dereference support, 
+          // however has countQueryHits instead
+          collection.find(spec, options, function(err, cursor)
+          {
+            cursor.toArray(function(err, docs)
+            {
+              if(countQueryHits)
+              {
+                //FIXME count is not correct as there is no additional options, is it so designed
+                collection.count(spec, function(err, allCount) {
+                  next(err, docs, allCount);
+                });
+              }
+              else
+              {
+                next(err, docs);
+              }
+              //db.close();
+            });
+          });
+        }
+      }
+    });
+  });
 }
